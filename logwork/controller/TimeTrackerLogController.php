@@ -70,7 +70,7 @@ class TimeTrackerLogController extends PhabricatorController
                     if (!$errors) {
                         $task = id(new ManiphestTaskQuery())
                             ->setViewer($viewer)
-                            ->withIDs([1])
+                            ->withIDs([$this->phid])
                             ->needSubscriberPHIDs(true)
                             ->executeOne();
 
