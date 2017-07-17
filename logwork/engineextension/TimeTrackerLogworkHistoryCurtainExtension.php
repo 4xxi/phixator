@@ -18,39 +18,92 @@ class TimeTrackerLogworkHistoryCurtainExtension extends PHUICurtainExtension
     }
 
     /**
-     * @param ManiphestTask $object
+     * @param ManiphestTask $task
      */
-    public function buildCurtainPanel(ManiphestTask $object)
+    public function buildCurtainPanel(ManiphestTask $task)
     {
-        $viewer = $this->getViewer();
-        $status_view = new PHUIStatusListView();
-
-        $xactions = (new ManiphestTransactionQuery())
-            ->setViewer($viewer)
-            ->withObjectPHIDs([$object->getPHID()])
-            ->withTransactionTypes([LogTimeItemTransaction::TRANSACTIONTYPE])
-            ->needComments(true)
-            ->execute();
-
-        $xactions = array_reverse($xactions);
-
-        if (!$xactions) {
+        if (!$xactions = $this->getTaskTimeTransactions($task)) {
             return;
         }
 
-        $grouped = [];
-        $uidToUser = [];
+        $status_view = new PHUIStatusListView();
+        $summarySpendByUser = [];
 
         foreach ($xactions as $xaction) {
             $item = new PHUIStatusItemView();
             $item->setIcon(PHUIStatusItemView::ICON_CLOCK, null, $xaction->getNewValue()['description'] ?? '');
             $item->setTarget($xaction->getTitle());
             $status_view->addItem($item);
+
+            $summarySpendByUser[$xaction->getAuthorPHID()] += TimeLogHelper::timeLogToMinutes(
+                $xaction->getNewValue()['spend'] ?? ''
+            );
+        }
+
+        if ($summarySpendByUser) {
+            $status_view->addItem((new PHUIStatusItemView())->setTarget('Summary:'));
+
+            $uidToUser = $this->getAuthorsByPHIDs(array_keys($summarySpendByUser));
+
+            foreach ($summarySpendByUser as $userPHID => $spendMinutes) {
+                if (!$author = $uidToUser[$userPHID] ?? null) {
+                    continue;
+                }
+
+                $authorUrl = (new PhabricatorObjectHandle())
+                    ->setType(phid_get_type($userPHID))
+                    ->setPHID($userPHID)
+                    ->setName($author->getUsername())
+                    ->setURI('/p/'.$author->getUsername().'/')
+                    ->renderLink();
+
+                $item = (new PHUIStatusItemView())
+                        ->setIcon(PHUIStatusItemView::ICON_CLOCK)
+                        ->setTarget(hsprintf('%s spend %s', $authorUrl, TimeLogHelper::minutesToTimeLog($spendMinutes)));
+
+                $status_view->addItem($item);
+            }
         }
 
         return $this->newPanel()
             ->setHeaderText(pht('Log work'))
             ->setOrder(40000)
             ->appendChild($status_view);
+    }
+
+    /**
+     * @param ManiphestTask $object
+     *
+     * @return ManiphestTransaction[]
+     */
+    protected function getTaskTimeTransactions(ManiphestTask $object): array
+    {
+        $xactions = (new ManiphestTransactionQuery())
+            ->setViewer($this->getViewer())
+            ->withObjectPHIDs([$object->getPHID()])
+            ->withTransactionTypes([LogTimeItemTransaction::TRANSACTIONTYPE])
+            ->needComments(true)
+            ->execute();
+
+        return array_reverse($xactions);
+    }
+
+    /**
+     * @param array $PHIDs
+     *
+     * @return array
+     */
+    protected function getAuthorsByPHIDs(array $PHIDs): array
+    {
+        $out = [];
+        if (!$authors = id(new PhabricatorUser())->loadAllWhere('phid in (%Ls)', $PHIDs)) {
+            return $out;
+        }
+
+        foreach ($authors as $author) {
+            $out[$author->getPHID()] = $author;
+        }
+
+        return $out;
     }
 }

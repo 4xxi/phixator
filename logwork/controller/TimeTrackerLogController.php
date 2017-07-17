@@ -70,7 +70,7 @@ class TimeTrackerLogController extends PhabricatorController
                     if (!$errors) {
                         $task = id(new ManiphestTaskQuery())
                             ->setViewer($viewer)
-                            ->withIDs([$this->phid])
+                            ->withPHIDs([$this->phid])
                             ->needSubscriberPHIDs(true)
                             ->executeOne();
 
@@ -147,7 +147,7 @@ class TimeTrackerLogController extends PhabricatorController
         $parts = explode(' ', $time);
         foreach ($parts as $part) {
             $modifier = substr($part, -1, 1);
-            $value = (int) substr($part, 0, strlen($time) -1);
+            $value = (int) substr($part, 0, strlen($part) -1);
 
             if (!$value) {
                 return false;
