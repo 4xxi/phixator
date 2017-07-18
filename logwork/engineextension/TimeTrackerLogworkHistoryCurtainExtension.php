@@ -43,7 +43,7 @@ class TimeTrackerLogworkHistoryCurtainExtension extends PHUICurtainExtension
         if ($summarySpendByUser) {
             $status_view->addItem((new PHUIStatusItemView())->setTarget('Summary:'));
 
-            $uidToUser = $this->getAuthorsByPHIDs(array_keys($summarySpendByUser));
+            $uidToUser = DataRetriverHelper::getAuthorsByPHIDs(array_keys($summarySpendByUser));
 
             foreach ($summarySpendByUser as $userPHID => $spendMinutes) {
                 if (!$author = $uidToUser[$userPHID] ?? null) {
@@ -86,24 +86,5 @@ class TimeTrackerLogworkHistoryCurtainExtension extends PHUICurtainExtension
             ->execute();
 
         return array_reverse($xactions);
-    }
-
-    /**
-     * @param array $PHIDs
-     *
-     * @return array
-     */
-    protected function getAuthorsByPHIDs(array $PHIDs): array
-    {
-        $out = [];
-        if (!$authors = id(new PhabricatorUser())->loadAllWhere('phid in (%Ls)', $PHIDs)) {
-            return $out;
-        }
-
-        foreach ($authors as $author) {
-            $out[$author->getPHID()] = $author;
-        }
-
-        return $out;
     }
 }

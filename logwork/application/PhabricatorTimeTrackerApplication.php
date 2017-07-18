@@ -52,6 +52,7 @@ class PhabricatorTimeTrackerApplication extends PhabricatorApplication
         return [
             '/timetracker/' => [
                 '(?P<verb>[a-z]+)/(?P<phid>[^/]+)/' => 'TimeTrackerLogController',
+                '(?:(?P<view>\w+)/)?' => 'TimeTrackerListController',
             ],
         ];
     }
