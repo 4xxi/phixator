@@ -47,8 +47,9 @@ class TimeTrackerListController extends PhabricatorController
         $nav = new AphrontSideNavFilterView();
         $nav->setBaseURI(new PhutilURI('/timetracker/'));
         $nav->addLabel(pht('Reports'));
-        $nav->addFilter('user', pht('By persons'));
+        $nav->addFilter('user', pht('By users'));
         $nav->addFilter('tasks', pht('By tasks'));
+        $nav->addFilter('usertask', pht('By users and tasks'));
 
         $this->view = $nav->selectFilter($this->view, 'user');
 
@@ -58,12 +59,17 @@ class TimeTrackerListController extends PhabricatorController
         switch ($this->view) {
             case 'user':
                 $core = $this->renderLogByUsers();
-                $crumbs->addTextCrumb(pht('By persons'));
+                $crumbs->addTextCrumb(pht('By users'));
                 break;
 
             case 'tasks':
                 $core = $this->renderLogByTasks();
                 $crumbs->addTextCrumb(pht('By tasks'));
+                break;
+
+            case 'usertask':
+                $core = $this->renderLogByUserAndTasks();
+                $crumbs->addTextCrumb(pht('By users and tasks'));
                 break;
 
             default:
@@ -138,7 +144,7 @@ class TimeTrackerListController extends PhabricatorController
         $dates = [];
 
         if (!$xactions = $this->getTimeLogTransactions()) {
-            return [$this->renderReportFilters(), hsprintf('<div class="phui-box phui-box-border phui-object-box mlt mll mlr">No data</div>')];
+            return $this->drawResponse([], 'Spend time by tasks');
         }
 
         $taskPHIDs = [];
@@ -202,26 +208,22 @@ class TimeTrackerListController extends PhabricatorController
             $rows[] = $row;
         }
 
-        $row = ['Total'];
+        $row = [hsprintf('<b>Total</b>')];
         $total = 0;
 
         foreach ($dates as $key => $value) {
             if (isset($summaryTaskTimeByDay[$key])) {
                 $total += $summaryTaskTimeByDay[$key];
-                $row[] = TimeLogHelper::minutesToTimeLog($summaryTaskTimeByDay[$key]);
+                $row[] = hsprintf('<b>'.TimeLogHelper::minutesToTimeLog($summaryTaskTimeByDay[$key]).'</b>');
                 continue;
             }
 
             $row[] = '-';
         }
-        $row[] = TimeLogHelper::minutesToTimeLog($total);
+        $row[] = hsprintf('<b>'.TimeLogHelper::minutesToTimeLog($total).'</b>');
         $rows[] = $row;
 
-        $panel = (new PHUIObjectBoxView())
-            ->setHeaderText('Grouping by tasks')
-            ->setTable(new AphrontTableView($rows));
-
-        return [$this->renderReportFilters(), $panel];
+        return $this->drawResponse($rows, 'Spend time by tasks');
     }
 
     /**
@@ -235,7 +237,7 @@ class TimeTrackerListController extends PhabricatorController
         $dates = [];
 
         if (!$xactions = $this->getTimeLogTransactions()) {
-            return [$this->renderReportFilters(), hsprintf('<div class="phui-box phui-box-border phui-object-box mlt mll mlr">No data</div>')];
+            return $this->drawResponse([], 'Spend time by users');
         }
 
         foreach ($xactions as $xaction) {
@@ -293,11 +295,153 @@ class TimeTrackerListController extends PhabricatorController
             $rows[] = $row;
         }
 
-        $table = new AphrontTableView($rows);
+        return $this->drawResponse($rows, 'Spend time by users');
+    }
 
+    /**
+     * @return array
+     */
+    protected function renderLogByUserAndTasks(): array
+    {
+        $request = $this->getRequest();
+        $viewer = $request->getUser();
+        $dates = [];
+        $usersTasks = [];
+        $taskPHIDs = [];
+        $tableRows = [];
+
+        if (!$xactions = $this->getTimeLogTransactions()) {
+            return $this->drawResponse([], 'Spend time by tasks grouped by users');
+        }
+
+        foreach ($xactions as $xaction) {
+            $authorPHID = $xaction->getAuthorPHID();
+            $started = $xaction->getNewValue()['started'];
+            $dateKey = date('Ymd', floor($started / 86400) * 86400);
+            $actionPHID = $xaction->getObjectPHID();
+
+            if (!isset($usersTasks[$authorPHID])) {
+                $usersTasks[$authorPHID] = [];
+            }
+
+            if (!isset($usersTasks[$authorPHID][$actionPHID])) {
+                $usersTasks[$authorPHID][$actionPHID] = [];
+            }
+
+            $usersTasks[$authorPHID][$actionPHID][$dateKey] += TimeLogHelper::timeLogToMinutes(
+                $xaction->getNewValue()['spend']
+            );
+            $taskPHIDs[$actionPHID] = 1;
+            $dates[$dateKey] = $started;
+        }
+
+        $tasks = (new ManiphestTaskQuery())->setViewer($viewer)->withPHIDs(array_keys($taskPHIDs))->execute();
+        $taskInfo = [];
+        foreach ($tasks as $task) {
+            $taskInfo[$task->getPHID()] = [
+                'url' => $task->getURI(),
+                'title' => $task->getTitle(),
+                'monogram' => $task->getMonogram(),
+                'closed' => $task->isClosed(),
+            ];
+        }
+
+        unset($xactions, $tasks, $taskPHIDs);
+
+        $authorPHIDToUser = DataRetriverHelper::getAuthorsByPHIDs(array_keys($usersTasks));
+
+        $row = ['Task'];
+        foreach ($dates as $dateKey => $timestamp) {
+            $row[] = date('Y-m-d', $timestamp);
+        }
+        $row[] = 'Total';
+        $tableRows[] = $row;
+
+        $totalSummary = 0;
+        $totalByDay = [];
+
+        foreach ($usersTasks as $authorPHID => $tasks) {
+            $tableRows[] = array_merge(
+                [phutil_tag(
+                    'a',
+                    [
+                        'href' => '/p/'.$authorPHIDToUser[$authorPHID]->getUsername().'/',
+                        'target' => '_blank',
+                    ],
+                    $authorPHIDToUser[$authorPHID]->getUsername()
+                )],
+                array_fill(0, count($dates) + 1, '')
+            );
+
+            $subtotal = [];
+            $subtotalSummary = 0;
+            foreach ($tasks as $taskPHID => $spendByDates) {
+                $row = [hsprintf('&nbsp;&nbsp;&nbsp;&nbsp;'.phutil_tag(
+                    'a',
+                    [
+                        'href' => $taskInfo[$taskPHID]['url'],
+                        'target' => '_blank',
+                        'class' => $taskInfo[$taskPHID]['closed'] ? 'phui-tag-core-closed' : '',
+                    ],
+                    hsprintf('%s: %s', $taskInfo[$taskPHID]['monogram'], $taskInfo[$taskPHID]['title'])
+                ))];
+
+                $totalByTask = 0;
+                foreach ($dates as $dateKey => $timestamp) {
+                    if (isset($spendByDates[$dateKey])) {
+                        $row[] = TimeLogHelper::minutesToTimeLog($spendByDates[$dateKey]);
+
+                        $totalByTask += $spendByDates[$dateKey];
+
+                        if (!isset($subtotal[$dateKey])) {
+                            $subtotal[$dateKey] = 0;
+                        }
+                        $subtotal[$dateKey] += $spendByDates[$dateKey];
+                        $subtotalSummary += $spendByDates[$dateKey];
+
+                        $totalByDay[$dateKey] += $spendByDates[$dateKey];
+                        $totalSummary += $spendByDates[$dateKey];
+
+                        continue;
+                    }
+
+                    $row[] = '-';
+                }
+
+                $row[] = $totalByTask ? TimeLogHelper::minutesToTimeLog($totalByTask) : '-';
+
+                $tableRows[] = $row;
+            }
+
+            $row = [hsprintf('&nbsp;&nbsp;&nbsp;&nbsp;<b>Subtotal</b>')];
+            foreach ($dates as $dateKey => $timestamp) {
+                $row[] = isset($subtotal[$dateKey]) ? TimeLogHelper::minutesToTimeLog($subtotal[$dateKey]) : '-';
+            }
+            $row[] = $subtotalSummary ? TimeLogHelper::minutesToTimeLog($subtotalSummary) : '-';
+
+            $tableRows[] = $row;
+        }
+
+        $row = [hsprintf('<b>Total</b>')];
+        foreach ($dates as $dateKey => $timestamp) {
+            $row[] = isset($totalByDay[$dateKey]) ? TimeLogHelper::minutesToTimeLog($totalByDay[$dateKey]) : '-';
+        }
+        $row[] = $totalSummary ? TimeLogHelper::minutesToTimeLog($totalSummary) : '-';
+        $tableRows[] = $row;
+
+        return $this->drawResponse($tableRows, 'Spend time by tasks grouped by users');
+    }
+
+    /**
+     * @param array $rows
+     *
+     * @return array
+     */
+    protected function drawResponse(array $rows, $tableTitle = ''): array
+    {
         $panel = new PHUIObjectBoxView();
-        $panel->setHeaderText('Tasks by users');
-        $panel->setTable($table);
+        $panel->setHeaderText($tableTitle);
+        $panel->setTable(new AphrontTableView($rows));
 
         return [$this->renderReportFilters(), $panel];
     }
