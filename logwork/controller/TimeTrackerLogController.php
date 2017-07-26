@@ -102,6 +102,10 @@ class TimeTrackerLogController extends PhabricatorController
                     return new Aphront404Response();
                 }
 
+                if ($transaction->getAuthorPHID() !== $viewer->getPHID() && !$viewer->getIsAdmin()) {
+                    return new Aphront404Response();
+                }
+
                 if ($request->isFormPost()) {
                     $userPHID = $request->getArr('user_phid')[0] ?? null;
                     $description  = $request->getStr('description');
