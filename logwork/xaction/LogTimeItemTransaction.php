@@ -11,9 +11,10 @@ class LogTimeItemTransaction extends ManiphestTaskTransactionType
     {
         $newValue = $this->getNewValue();
 
-        return pht(
-            '%s logged %s at %s, %s %s',
+        return hsprintf(
+            '%s logged <a href="/phixator/edit/%s/" data-sigil="workflow">%s</a> at %s, %s %s',
             $this->renderAuthor(),
+            $this->getStorage()->getPHID(),
             $newValue['spend'],
             phabricator_date($newValue['started'], $this->getViewer()),
             phabricator_time($newValue['started'], $this->getViewer()),

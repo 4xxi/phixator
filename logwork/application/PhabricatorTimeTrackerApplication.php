@@ -7,7 +7,7 @@ class PhabricatorTimeTrackerApplication extends PhabricatorApplication
 {
     public function getName()
     {
-        return pht('TimeTracker');
+        return pht('Phixator');
     }
 
     public function getShortDescription()
@@ -17,7 +17,7 @@ class PhabricatorTimeTrackerApplication extends PhabricatorApplication
 
     public function getBaseURI()
     {
-        return '/timetracker/';
+        return '/phixator/';
     }
 
     public function isPrototype()
@@ -50,9 +50,9 @@ class PhabricatorTimeTrackerApplication extends PhabricatorApplication
     public function getRoutes()
     {
         return [
-            '/timetracker/' => [
+            '/phixator/' => [
                 '(?P<verb>[a-z]+)/(?P<phid>[^/]+)/' => 'TimeTrackerLogController',
-                '(?:(?P<view>\w+)/)?' => 'TimeTrackerListController',
+                '(?:(?P<view>\w+)/)?' => 'TimeTrackerReportsController',
             ],
         ];
     }

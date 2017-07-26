@@ -49,7 +49,7 @@ class TimeTrackerUIEventListener extends PhabricatorEventListener
             ->setName(pht('Log work'))
             ->setIcon('fa-clock-o')
             ->setWorkflow(true)
-            ->setHref('/timetracker/log/'.$object->getPHID().'/');
+            ->setHref('/phixator/log/'.$object->getPHID().'/');
 
         if (!$user->isLoggedIn()) {
             $track_action->setDisabled(true);

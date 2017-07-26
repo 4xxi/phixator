@@ -1,7 +1,15 @@
 <?php
 
-class TimeTrackerListController extends PhabricatorController
+class TimeTrackerReportsController extends PhabricatorController
 {
+    /**
+     * @var bool
+     */
+    protected $downloadReport;
+
+    /**
+     * @var string
+     */
     private $view;
 
     /**
@@ -37,15 +45,21 @@ class TimeTrackerListController extends PhabricatorController
 
         $this->filterDateTo = time();
 
+        $this->downloadReport = false;
+
+        require_celerity_resource('aphront-tooltip-css');
+        Javelin::initBehavior('phabricator-tooltips', array());
+
         if ($request->isFormPost()) {
             $this->filterProject = $request->getArr('set_project');
             $this->filterUser = $request->getArr('set_user');
             $this->filterDateFrom = AphrontFormDateControlValue::newFromRequest($request, 'set_from')->getEpoch();
             $this->filterDateTo = AphrontFormDateControlValue::newFromRequest($request, 'set_to')->getEpoch();
+            $this->downloadReport = (bool) $request->getStr('download', false);
         }
 
         $nav = new AphrontSideNavFilterView();
-        $nav->setBaseURI(new PhutilURI('/timetracker/'));
+        $nav->setBaseURI(new PhutilURI('/phixator/'));
         $nav->addLabel(pht('Reports'));
         $nav->addFilter('user', pht('By users'));
         $nav->addFilter('tasks', pht('By tasks'));
@@ -58,25 +72,36 @@ class TimeTrackerListController extends PhabricatorController
 
         switch ($this->view) {
             case 'user':
-                $core = $this->renderLogByUsers();
+                $rows = $this->getLogByUsers();
                 $crumbs->addTextCrumb(pht('By users'));
+                $tableTitle = 'Spend time by users';
                 break;
 
             case 'tasks':
-                $core = $this->renderLogByTasks();
+                $rows = $this->getLogByTasks();
                 $crumbs->addTextCrumb(pht('By tasks'));
+                $tableTitle = 'Spend time by tasks';
                 break;
 
             case 'usertask':
-                $core = $this->renderLogByUserAndTasks();
+                $rows = $this->getLogByUserAndTasks();
                 $crumbs->addTextCrumb(pht('By users and tasks'));
+                $tableTitle = 'Spend time by tasks grouped by users';
                 break;
 
             default:
                 return new Aphront404Response();
         }
 
-        $nav->appendChild($core);
+        if ($this->downloadReport) {
+            return $this->downloadReport($rows ?? []);
+        }
+
+        $panel = new PHUIObjectBoxView();
+        $panel->setHeaderText($tableTitle);
+        $panel->setTable(new AphrontTableView($rows ?? []));
+
+        $nav->appendChild([$this->renderReportFilters(), $panel]);
 
         return $this->newPage()
             ->setTitle($title)
@@ -125,7 +150,19 @@ class TimeTrackerListController extends PhabricatorController
                     ->setValue($this->filterDateTo)
             );
 
-        $form->appendChild(id(new AphrontFormSubmitControl())->setValue(pht('Filter')));
+        $downloadBtn = id(new PHUIButtonView())
+            ->setTag('input')
+            ->setButtonType('submit')
+            ->setValue('Download csv')
+            ->setColor('grey')
+            ->setCustomClasses(['mml'])
+            ->setName('download');
+
+        $filterBtn = id(new AphrontNormalFormSubmitControl())
+            ->setValue(pht('Filter'))
+            ->addButton($downloadBtn);
+
+        $form->appendChild($filterBtn);
 
         $filter = new AphrontListFilterView();
         $filter->appendChild($form);
@@ -134,9 +171,9 @@ class TimeTrackerListController extends PhabricatorController
     }
 
     /**
-     * @return array
+     * @return array|null
      */
-    protected function renderLogByTasks(): array
+    protected function getLogByTasks()
     {
         $request = $this->getRequest();
         $viewer = $request->getUser();
@@ -144,7 +181,7 @@ class TimeTrackerListController extends PhabricatorController
         $dates = [];
 
         if (!$xactions = $this->getTimeLogTransactions()) {
-            return $this->drawResponse([], 'Spend time by tasks');
+            return null;
         }
 
         $taskPHIDs = [];
@@ -223,21 +260,22 @@ class TimeTrackerListController extends PhabricatorController
         $row[] = hsprintf('<b>'.TimeLogHelper::minutesToTimeLog($total).'</b>');
         $rows[] = $row;
 
-        return $this->drawResponse($rows, 'Spend time by tasks');
+        return $rows;
     }
 
     /**
-     * @return array
+     * @return array|null
      */
-    protected function renderLogByUsers(): array
+    protected function getLogByUsers()
     {
         $request = $this->getRequest();
         $viewer = $request->getUser();
         $actions = [];
         $dates = [];
+        $tasks = [];
 
         if (!$xactions = $this->getTimeLogTransactions()) {
-            return $this->drawResponse([], 'Spend time by users');
+            return null;
         }
 
         foreach ($xactions as $xaction) {
@@ -251,6 +289,11 @@ class TimeTrackerListController extends PhabricatorController
             }
 
             $actions[$authorPHID][$dateKey] += TimeLogHelper::timeLogToMinutes($loggedTime);
+            $tasks[$authorPHID][$dateKey][$xaction->getObject()->getID()] = sprintf(
+                '%s: %s',
+                $xaction->getObject()->getMonogram(),
+                $xaction->getObject()->getTitle()
+            );
             $dates[$dateKey] = floor($started / 86400) * 86400;
         }
 
@@ -283,25 +326,58 @@ class TimeTrackerListController extends PhabricatorController
             $total = 0;
             foreach ($dates as $key => $value) {
                 if (isset($spendTimeByDates[$key])) {
-                    $row[] = TimeLogHelper::minutesToTimeLog($spendTimeByDates[$key]);
+                    $row[] = javelin_tag(
+                        'a',
+                        [
+                            'href' => '/maniphest/?ids='.implode(',', array_keys($tasks[$authorPHID][$key])),
+                            'target' => '_blank',
+                            'sigil' => 'has-tooltip',
+                            'meta'  => [
+                                'tip' => array_reduce($tasks[$authorPHID][$key], function($summary, $item) {
+                                    $summary .= $item."\r\n";
+                                    return $summary;
+                                }),
+                            ],
+                        ],
+                        TimeLogHelper::minutesToTimeLog($spendTimeByDates[$key])
+                    );
+
                     $total += $spendTimeByDates[$key];
                 } else {
                     $row[] = '-';
                 }
             }
 
-            $row[] = TimeLogHelper::minutesToTimeLog($total);
+            //$row[] = TimeLogHelper::minutesToTimeLog($total);
+            $summaryTasksByUser = [];
+            foreach ($tasks[$authorPHID] as $date => $taskList) {
+                foreach ($taskList as $taskId => $taskTitle) {
+                    $summaryTasksByUser[$taskId] = $taskTitle;
+                }
+            }
+            $row[] = javelin_tag(
+                'a',
+                [
+                    'href' => '/maniphest/?ids='.implode(',', array_keys($summaryTasksByUser)),
+                    'target' => '_blank',
+                    'sigil' => 'has-tooltip',
+                    'meta'  => [
+                        'tip' => implode("\r\n", $summaryTasksByUser),
+                    ],
+                ],
+                TimeLogHelper::minutesToTimeLog($total)
+            );
 
             $rows[] = $row;
         }
 
-        return $this->drawResponse($rows, 'Spend time by users');
+        return $rows;
     }
 
     /**
-     * @return array
+     * @return array|null
      */
-    protected function renderLogByUserAndTasks(): array
+    protected function getLogByUserAndTasks()
     {
         $request = $this->getRequest();
         $viewer = $request->getUser();
@@ -311,7 +387,7 @@ class TimeTrackerListController extends PhabricatorController
         $tableRows = [];
 
         if (!$xactions = $this->getTimeLogTransactions()) {
-            return $this->drawResponse([], 'Spend time by tasks grouped by users');
+            return null;
         }
 
         foreach ($xactions as $xaction) {
@@ -429,27 +505,13 @@ class TimeTrackerListController extends PhabricatorController
         $row[] = $totalSummary ? TimeLogHelper::minutesToTimeLog($totalSummary) : '-';
         $tableRows[] = $row;
 
-        return $this->drawResponse($tableRows, 'Spend time by tasks grouped by users');
-    }
-
-    /**
-     * @param array $rows
-     *
-     * @return array
-     */
-    protected function drawResponse(array $rows, $tableTitle = ''): array
-    {
-        $panel = new PHUIObjectBoxView();
-        $panel->setHeaderText($tableTitle);
-        $panel->setTable(new AphrontTableView($rows));
-
-        return [$this->renderReportFilters(), $panel];
+        return $tableRows;
     }
 
     /**
      * @return ManiphestTransaction[]|null
      */
-    protected function getTimeLogTransactions(): ?array
+    protected function getTimeLogTransactions()
     {
         $xtable = new ManiphestTransaction();
         $where = [];
@@ -518,5 +580,29 @@ class TimeTrackerListController extends PhabricatorController
         });
 
         return $out;
+    }
+
+    /**
+     * @param array $rows
+     *
+     * @return AphrontFileResponse
+     */
+    protected function downloadReport(array $rows): AphrontFileResponse
+    {
+        $reportContent = 'No data available.';
+
+        if ($rows) {
+            $reportContent = array_reduce($rows, function($result, $row) {
+                $result .= implode(';', str_replace('&nbsp;', '', array_map('strip_tags', $row)))."\r\n";
+                return $result;
+            });
+        }
+
+        $response = id(new AphrontFileResponse())
+            ->setMimeType('text/plain')
+            ->setContent($reportContent)
+            ->setDownload('Report_'.date('Y-m-d').'.csv');
+
+        return $response;
     }
 }
